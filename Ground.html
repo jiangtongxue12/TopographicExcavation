@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+    <title>TEST</title>
+    <link rel="stylesheet" href="http://localhost/api/esri/css/main.css" type="text/css" />
+
+    <script type="text/javascript" src="js/three109.min.js"></script>
+    <script type="text/javascript" src="renderers/groundLayer.js"></script>
+    <script type="text/javascript" src="http://localhost/api/init.js"></script>
+
+
+    <style>
+        html,
+        body,
+        #viewDiv { 
+            padding: 0;
+            margin: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        .rightPanel {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+        }
+    </style>
+    <script>
+        let depth = -100;
+        let view = null;
+        let groundRender = null;
+        let GroundLayerClass = null;
+        require([
+            "esri/Map",
+            "esri/views/SceneView",
+            "esri/geometry/SpatialReference",
+            "esri/layers/FeatureLayer",
+            "esri/layers/SceneLayer",
+            "esri/layers/BuildingSceneLayer",
+            "esri/layers/IntegratedMeshLayer",
+            "esri/layers/ElevationLayer",
+            "esri/layers/GraphicsLayer",
+            "esri/widgets/ElevationProfile",
+            "esri/widgets/Slice",
+            "esri/widgets/Slice/SliceViewModel",
+            'esri/views/3d/externalRenderers',
+            "esri/views/draw/Draw",
+            "esri/Graphic",
+            "esri/geometry/Point",
+            "esri/geometry/Polyline",
+            "esri/geometry/Polygon",
+            "esri/geometry/geometryEngine"
+        ],
+            function (
+                Map,
+                SceneView,
+                SpatialReference,
+                FeatureLayer,
+                SceneLayer,
+                BuildingSceneLayer,
+                IntegratedMeshLayer,
+                ElevationLayer,
+                GraphicsLayer,
+                ElevationProfile,
+                Slice,
+                SliceViewModel,
+                externalRenderers,
+                Draw,
+                Graphic,
+                Point,
+                Polyline,
+                Polygon,
+                geometryEngine
+            ) {
+                window.THREE = THREE;
+                GroundLayerClass = GroundLayer;
+                // var integratedLayer = new IntegratedMeshLayer({
+                //     url: 'https://tiles.arcgis.com/tiles/u0sSNqDXr7puKJrF/arcgis/rest/services/Frankfurt2017_v17/SceneServer/layers/0'
+                // });
+                const elevLayer = new ElevationLayer({
+                    url: "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer"
+                });
+                const sceneLyr = new SceneLayer({
+                    url: 'https://portal90.esrish.gis/server/rest/services/Hosted/pipeline_updated/SceneServer/layers/0',
+                });
+                const xhBuilding = new SceneLayer({
+                    url: 'https://portal90.esrish.gis/server/rest/services/Hosted/xh_building/SceneServer/layers/0',
+                })
+                // 记录剖面线的每一个结点
+                var pointList = [];
+                var hilightPointLayer = new GraphicsLayer();
+                var map = new Map({ layers: [hilightPointLayer], basemap: 'satellite', ground: "world-topobathymetry" });//
+                view = new SceneView({
+                    container: "viewDiv",
+                    map: map,
+                    //spatialReference: { wkid: 4326 },
+                    // highlightOptions: {
+                    //     color: [255, 0, 0, 0.5],
+                    //     haloColor: 'red',
+                    //     haloOpacity: 0.7,
+                    //     fillOpacity: 0.7,
+                    // },
+                    //viewingMode: 'local'
+                });
+                // window.view = view;
+                //map.ground.layers.add(elevLayer);
+                //map.add(sceneLyr);
+                //map.add(xhBuilding);
+                map.ground.navigationConstraint = 'none';
+                view.on("click", function (event) {
+                    console.log(event.mapPoint);
+                    const geometry = event.mapPoint;
+                });
+                let draw = new Draw({
+                    view: view
+                });
+                let graphicLyr = new GraphicsLayer({ title: 'drawGra' });
+                map.add(graphicLyr);
+                view.when(function () {
+                    //view.goTo(sceneLyr.fullExtent);
+                    view.goTo({
+                        heading: 335.3487520136041,
+                        tilt: 51.906628080682744,
+                        position: {
+                            x: 11541947.085516693,
+                            y: 4854685.218804997,
+                            z: 3046.1091828467324,
+                            spatialReference: { wkid: 102100 }
+                        }
+                    });
+                });
+                let state = 'drawing';
+                document.getElementById('drawPolygon').onclick = function () {
+                    var action = draw.create("polygon");
+                    //添加一个点的时候触发
+                    action.on("vertex-add", function (evt) {
+                        state = 'drawing';
+                        createPolygonGraphic(evt.vertices);
+                    });
+                    action.on("cursor-update", function (evt) {
+                        state = 'drawing';
+                        createPolygonGraphic(evt.vertices);
+                    });
+                    // 按ctrl+c撤销一个点的时候触发
+                    action.on("vertex-remove", function (evt) {
+                        state = 'drawing';
+                        createPolygonGraphic(evt.vertices);
+                    });
+                    //双击完成的时候触发
+                    action.on("draw-complete", function (evt) {
+                        state = 'complete';
+                        createPolygonGraphic(evt.vertices);
+                    });
+                }
+                document.getElementById('clearBtn').onclick = function () {
+                    if (groundRender) {
+                        groundRender.slice && groundRender.slice.destroy();
+                        externalRenderers.remove(view, groundRender);
+                        groundRender = null;
+                    }
+                };
+                let centerOrigin = [];
+                function convertPoints(vertices) {
+                    if (vertices <= 2) {
+                        alert('请绘制至少3个点');
+                        return;
+                    };
+                    depth = document.getElementById('depthValue').value ? document.getElementById('depthValue').value * -1 : depth;
+                    if (depth > 0) {
+                        alert('请输入正确深度值');
+                        return;
+                    }
+                    
+                    // if (groundRender) {
+                    //     groundRender.slice && groundRender.slice.destroy();
+                    //     externalRenderers.remove(view, groundRender);
+                    //     groundRender = null;
+                    //}
+                    //修改支持多次开挖
+                    if (groundRender) {
+                        if (groundRender.cutPlanes.length == 0) {
+                            groundRender.slice && groundRender.slice.destroy();
+                            externalRenderers.remove(view, groundRender);
+                            groundRender = null;
+                            groundRender = new GroundLayerClass({
+                            view,
+                            depth,
+                            vertices,
+                            centerOrigin,
+                            externalRenderers,
+                            Slice,
+                            SliceViewModel,
+                            Graphic,
+                            Point,
+                            Polyline,
+                            Polygon,
+                            geometryEngine
+                        });
+                        externalRenderers.add(view, groundRender);
+                        } else {
+                            groundRender.depth = depth;
+                            groundRender.centerOrigin = [centerOrigin[0], centerOrigin[1], depth];
+                            groundRender.createBaseGeometry(vertices);
+                        }
+                    } else {
+                        groundRender = new GroundLayerClass({
+                            view,
+                            depth,
+                            vertices,
+                            centerOrigin,
+                            externalRenderers,
+                            Slice,
+                            SliceViewModel,
+                            Graphic,
+                            Point,
+                            Polyline,
+                            Polygon,
+                            geometryEngine
+                        });
+                        externalRenderers.add(view, groundRender);
+                    }
+
+
+                }
+                function createPolygonGraphic(vertices) {
+                    graphicLyr.removeAll();
+                    if (state === 'complete') {
+                        let num = vertices.length > 15 ? 15 : vertices.length;
+                        let newVertices = [];
+                        for (let k = 0; k < num; k++) {
+                            newVertices.push([vertices[k][0], vertices[k][1], depth])
+                        }
+                        var polygon = new Polygon({
+                            hasZ: true,
+                            rings: newVertices,
+                            spatialReference: view.spatialReference,
+                        });
+                        var line = new Polyline({
+                            //hasZ: true,
+                            paths: newVertices,
+                            spatialReference: view.spatialReference,
+                        });
+                        // elevLayer.queryElevation(line, { demResolution: 20 }).then(function (res) {
+                        //     convertPoints(res.geometry.paths[0]);
+                        // });
+                        if (view.map.ground.layers.items.length > 0) {
+                            let hLayer = view.map.ground.layers.items[0];
+                            hLayer.queryElevation(line).then(function (res) {
+                                convertPoints(res.geometry.paths[0]);
+                            });
+                        } else {
+                            convertPoints(newVertices);
+                        }
+                    } else {
+                        var polygon = new Polygon({
+                            hasZ: false,
+                            rings: vertices,
+                            spatialReference: view.spatialReference,
+                        });
+                        centerOrigin = [polygon.centroid.x, polygon.centroid.y, depth];
+                        var graphic = new Graphic({
+                            geometry: polygon,
+                            symbol: {
+                                type: "simple-fill",
+                                color: [3, 255, 240, 0.5],
+                                style: "solid",
+                                outline: {
+                                    color: [255, 116, 3],
+                                    width: 2
+                                }
+                            }
+                        });
+                        graphicLyr.add(graphic);
+                    }
+                }
+
+            });
+    </script>
+</head>
+
+<body>
+    <!-- Single button -->
+    <div id="viewDiv">
+        <div class='rightPanel'>
+            <div style="margin-bottom: 20px;">
+                <span style="color:#fff">开挖深度：</span>
+                <input id='depthValue' style="width:100px" type='number' />
+                <span style="color:#fff">米</span>
+            </div>
+            <div>
+                <span style="color:#fff">绘制开挖面：</span>
+                <button id="drawPolygon">绘制面</button>
+                <button id="clearBtn">清除</button>
+            </div>
+
+        </div>
+    </div>
+</body>
+
+</html>
